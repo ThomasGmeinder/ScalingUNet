@@ -5,6 +5,7 @@ import random
 import socket
 import sys
 from pathlib import Path
+from icecream import ic
 
 import GPUtil
 
@@ -181,7 +182,7 @@ def parse_arguments():
 
 	parser.add_argument("--config_file",
 						help="Config file for experiment",
-						default="../configs/config_default.yaml", type=str)
+						default="./../configs/config_b.yaml", type=Path)
 	args = parser.parse_args()
 	args_dict = vars(args)
 	return args, args_dict
@@ -200,8 +201,7 @@ def load_config(args_dict, config_path):
 
 	# logger.info("Overwriting argument vars with config file")
 	logger.info('Load config: {}'.format(config_path))
-
-	config = yaml.load(open(str(config_path)), Loader=AttrDictYAMLLoader)
+	config = yaml.load(open(str(config_path.absolute())), Loader=AttrDictYAMLLoader)
 	if _10sec:
 		config['dataset']['load_into_memory'] = True
 		config['train_params']['iterations_pro_epoch'] = 20
@@ -492,9 +492,7 @@ def main(args: list, args_dict: dict):
 		unique_file_extension: str = ""
 
 	if args_dict["experiment_root"] == "":
-		args_dict["experiment_root"]: Path = Path().cwd()
-		if "hzg_u_net" not in args_dict["experiment_root"].name:
-			args_dict["experiment_root"] = args_dict["experiment_root"] / '..'
+		args_dict["experiment_root"]: Path = Path('..')
 	else:
 		args_dict["experiment_root"] = Path(args_dict["experiment_root"])
 
@@ -510,7 +508,7 @@ def main(args: list, args_dict: dict):
 	args_dict['mlflow_path'] = args_dict['experiment_root'] / 'mlruns'
 
 	if use_mlflow:
-		mlflow.set_tracking_uri(f"file://{args_dict['mlflow_path']}")
+		mlflow.set_tracking_uri(f"file://{args_dict['mlflow_path'].absolute()}")
 		mlflow.set_experiment("HZG U-Net Segmentation - training")
 		experiment = mlflow.get_experiment_by_name("HZG U-Net Segmentation - training")
 

@@ -171,3 +171,4 @@ experiments/
 logs/
 mlruns/
 results/
+data/raw_images
