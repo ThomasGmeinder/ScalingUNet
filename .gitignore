@@ -164,3 +164,10 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/pycharm+all,windows,macos,linux
+
+
+#### PROJECT
+experiments/
+logs/
+mlruns/
+results/
