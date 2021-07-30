@@ -1,16 +1,22 @@
 import tensorflow.keras as keras
-import tensorflow_addons as tfa
+#import tensorflow_addons as tfa
 from tensorflow.keras import layers
+
 ## Import Necessary Modules
 from tensorflow.keras.layers import Activation
 from tensorflow.keras.layers import (
 	Conv2D, Conv2DTranspose,
 	MaxPooling2D, Dropout, concatenate, SpatialDropout2D,
-	LeakyReLU, ReLU)
-from tensorflow.keras.layers.experimental import SyncBatchNormalization
-from tensorflow.keras.models import Model
+	LeakyReLU, ReLU, BatchNormalization)
+
+#TODO: implent sync batch norm
+#from tensorflow.keras.layers.experimental import SyncBatchNormalization
+
+#from tensorflow.keras.models import Model
 from tensorflow.keras.regularizers import l1_l2
 from tensorflow.keras.utils import get_custom_objects
+
+from tensorflow.python.ipu import keras as ipu_keras
 
 
 class Mish(Activation):
@@ -147,6 +153,8 @@ def conv2d_act_drop_norm(inputs,
 	if use_norm == 'none':
 		NORM = None
 	elif use_norm == 'BatchNorm':
+		NORM = BatchNormalization(name=f"{name}_BN")
+	elif use_norm == 'SyncBatchNorm':
 		NORM = SyncBatchNormalization(name=f"{name}_syncBN")
 	elif use_norm == 'GroupNorm':
 		NORM = tfa.layers.GroupNormalization(groups=2, name=f"{name}_GN")
@@ -225,5 +233,66 @@ def custom_unet(
 	x = Conv2D(num_classes, (1, 1), name='conv_logits')(x)
 	outputs = layers.Activation('linear', dtype='float32', name='act_predictions')(x)
 
-	model = Model(inputs=[inputs], outputs=[outputs])
+	model = ipu_keras.Model(inputs=[inputs], outputs=[outputs])
+	return model
+
+def custom_unet_small(
+		input_shape,
+		num_classes=4,
+		dropout=0.5,
+		dropout_conv=0.0,
+		filters=64,
+		regularization_factor_l1=0.0,
+		regularization_factor_l2=0.0,
+		use_norm='none',
+		activation='relu',
+		num_layers=3,
+		kernel_size=(3, 3),
+		kernel_initializer="he_normal",
+		output_activation='softmax',
+		dropout_type='spatial',
+		layer_order='CADN'):
+	# Build U-Net model
+	inputs = keras.layers.Input(input_shape)
+
+	x = inputs
+
+	down_layers = []
+	#for l in range(num_layers):
+	x = conv2d_block(inputs=x, name=f"down{1}", use_norm=use_norm, dropout=dropout_conv, filters=filters,
+					 kernel_size=kernel_size,
+					 activation=activation, kernel_initializer=kernel_initializer, padding='same',
+					 regularization_factor_l1=regularization_factor_l1,
+					 regularization_factor_l2=regularization_factor_l2,
+					 dropout_type=dropout_type, layer_order=layer_order)
+
+	down_layers.append(x)
+	#x = MaxPooling2D((2, 2), strides=2, name=f"down{1}_maxPooling")(x)
+	filters = filters * 2  # double the number of filters with each layer
+
+	# if dropout > 0:
+	# 	x = Dropout(dropout)(x)
+	# x = conv2d_block(inputs=x, name=f"latent", use_norm=use_norm, dropout=dropout_conv, filters=filters,
+	# 				 kernel_size=kernel_size,
+	# 				 activation=activation, kernel_initializer=kernel_initializer, padding='same',
+	# 				 regularization_factor_l1=regularization_factor_l1,
+	# 				 regularization_factor_l2=regularization_factor_l2,
+	# 				 dropout_type=dropout_type, layer_order=layer_order)
+
+	# for i, conv in enumerate(reversed(down_layers)):
+	# 	filters //= 2  # decreasing number of filters with each layer
+	# 	x = Conv2DTranspose(filters, (2, 2), strides=(2, 2), padding='same', name=f"up{i}_convTranspose")(x)
+	#
+	# 	x = concatenate([x, conv])
+	# 	x = conv2d_block(inputs=x, name=f"up{i}", use_norm=use_norm, dropout=dropout_conv, filters=filters,
+	# 					 kernel_size=kernel_size,
+	# 					 activation=activation, kernel_initializer=kernel_initializer, padding='same',
+	# 					 regularization_factor_l1=regularization_factor_l1,
+	# 					 regularization_factor_l2=regularization_factor_l2,
+	# 					 dropout_type=dropout_type, layer_order=layer_order)
+
+	x = Conv2D(num_classes, (1, 1), name='conv_logits')(x)
+	outputs = layers.Activation('linear', dtype='float32', name='act_predictions')(x)
+
+	model = ipu_keras.Model(inputs=[inputs], outputs=[outputs])
 	return model

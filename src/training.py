@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from icecream import ic
 
-import GPUtil
 
 try:
 	use_mlflow = True
@@ -29,6 +28,11 @@ from utils.metrics import seg_metric, bacc_metric
 from utils.my_callback import ImageLogger, LearningRateLogger
 
 from tensorflow.keras import mixed_precision
+
+from tensorflow.python.ipu import keras as ipu_keras
+from tensorflow.python.ipu import ipu_strategy
+from tensorflow.python.ipu import utils as ipu_utils
+from tensorflow.python import ipu
 
 # tf.compat.v1.disable_eager_execution()
 _10sec = False
@@ -62,6 +66,12 @@ def parse_arguments():
 	parser.add_argument("--seed",
 						help="Seed for the experiment", type=str,
 						default=None)
+	# IPU profiling
+	parser.add_argument("--profile",
+						help="profile", type=lambda x: (str(x).lower() == 'true'))
+	parser.add_argument("--profile_dir",
+						help="profile_dir", type=str,
+						default="./../logs/ipu")
 
 	# dataset relevant arguments
 	parser.add_argument("--img",
@@ -169,10 +179,10 @@ def parse_arguments():
 						help="Training iteration pro Epoch", type=int)
 	parser.add_argument("--validation_freq",
 						help="After X interations we validate our model", type=int)
-	parser.add_argument("--num_GPU",
-						help="Number of GPUs", type=int)
+	parser.add_argument("--num_IPU",
+						help="Number of IPUs", type=int)
 	parser.add_argument("--batchsize",
-						help="batchsize pro GPU -> will be scaled with num_GPU", type=int)
+						help="batchsize pro IPU -> will be scaled with num_IPU", type=int)
 	parser.add_argument("--early_stopping",
 						help="Stop training after X iterations without loss improvement", type=int)
 
@@ -208,8 +218,8 @@ def load_config(args_dict, config_path):
 		config['train_params']['validation_freq'] = 1
 
 	# setting gpus
-	if config['train_params']['num_GPU'] == -1:
-		config['train_params']['num_GPU'] = len(GPUtil.getGPUs())
+	if config['train_params']['num_IPU'] == -1:
+		config['train_params']['num_IPU'] = len(GPUtil.getGPUs())
 
 	# dataset
 	keys = ['img', 'dataset_train', 'dataset_validate', 'use_pseudo',
@@ -247,7 +257,7 @@ def load_config(args_dict, config_path):
 
 	# train_params
 	keys = ['log_path', 'workers', 'epochs', 'iterations_pro_epoch',
-			'validation_freq', 'num_GPU', 'batchsize', 'early_stopping']
+			'validation_freq', 'num_IPU', 'batchsize', 'early_stopping']
 	check_args(keys, 'train_params')
 
 	for subconfig in config.values():
@@ -335,64 +345,66 @@ def create_model(args, args_dict):
 		process each sub-batch on one GPU, then return the full
 		batch of 64 processed samples.
 	"""
-	strategy = tf.distribute.MirroredStrategy()
-	logger.info('Number of devices: {}'.format(strategy.num_replicas_in_sync))
-	with strategy.scope():
-		model = simple_unet.custom_unet((None, None, 1),
-										num_classes=args_dict['n_classes'],
-										dropout=args_dict['dropout'],
-										dropout_conv=args_dict['dropout_conv'],
-										filters=args_dict['filters'],
-										regularization_factor_l1=args_dict['regularization_factor_l1'],
-										regularization_factor_l2=args_dict['regularization_factor_l2'],
-										use_norm=args_dict['use_norm'],
-										activation=args_dict['activation'],
-										num_layers=args_dict['num_layers'],
-										kernel_size=(args_dict['kernel_size'], args_dict['kernel_size']),
-										output_activation=args_dict['output_activation'],
-										dropout_type=args_dict['dropout_type'],
-										layer_order=args_dict['layer_order'])
+	#strategy = tf.distribute.MirroredStrategy()
+	# Create an execution strategy.
+	model = simple_unet.custom_unet((args_dict['image_size'], args_dict['image_size'], 1),
+									num_classes=args_dict['n_classes'],
+									dropout=args_dict['dropout'],
+									dropout_conv=args_dict['dropout_conv'],
+									filters=args_dict['filters'],
+									regularization_factor_l1=args_dict['regularization_factor_l1'],
+									regularization_factor_l2=args_dict['regularization_factor_l2'],
+									use_norm=args_dict['use_norm'],
+									activation=args_dict['activation'],
+									num_layers=args_dict['num_layers'],
+									kernel_size=(args_dict['kernel_size'], args_dict['kernel_size']),
+									output_activation=args_dict['output_activation'],
+									dropout_type=args_dict['dropout_type'],
+									layer_order=args_dict['layer_order'])
 
-		model.summary(print_fn=logger.info)
+	model.summary(print_fn=logger.info)
 
-		#########################
-		# Compile + train
-		#########################
-		if args_dict['loss'] == 'ce':
-			loss_fn = keras.losses.CategoricalCrossentropy(from_logits=True)
-		elif args_dict['loss'] == 'dice':
-			loss_fn = SegLoss(include_background=False)
-		elif args_dict['loss'] == 'logDice':
-			loss_fn = SegLoss(include_background=False, log_dice=True)
-		elif args_dict['loss'] == 'dice_bg':
-			loss_fn = SegLoss(include_background=True)
-		elif args_dict['loss'] == 'dice_ce':
-			loss_fn = CESegLoss(include_background=False, log_dice=False)
-		elif args_dict['loss'] == 'logDice_ce':
-			loss_fn = CESegLoss(include_background=False, log_dice=True)
-		# elif args_dict['loss'] == 'dice_wce':
-		# 	loss_fn = WCESoftDiceLoss(np.array([1.22623767, 7.16236265, 89.2576995, 29.69548242]), do_bg=False)
-		elif args_dict['loss'] == 'wce':
-			loss_fn = WCELoss(
-				tf.convert_to_tensor([1.22623767, 7.16236265, 89.2576995, 29.69548242], dtype=tf.float32))
-			# [ 1.22623767  7.16236265 89.2576995  29.69548242]
-			pass
-		# elif args_dict['loss'] == 'cfocal':
-		# 	loss_fn = categorical_focal_loss(alpha=[[.25, .25, .25, .25]], gamma=2)
-		# 	# [ 1.22623767  7.16236265 89.2576995  29.69548242]
-		# 	pass
-		metric_fns = [seg_metric(include_background=False),
-					  seg_metric(include_background=False, flag_soft=False, num_classes=args_dict['n_classes']),
-					  seg_metric(class_idx=2, name="cScrew", flag_soft=False, num_classes=args_dict['n_classes']),
-					  seg_metric(include_background=False, jaccard=True, flag_soft=False,
-								 num_classes=args_dict['n_classes']),
-					  bacc_metric(include_background=False, num_classes=args_dict['n_classes'])]
+	#########################
+	# Compile + train
+	#########################
+	if args_dict['loss'] == 'ce':
+		loss_fn = keras.losses.CategoricalCrossentropy(from_logits=True)
+	elif args_dict['loss'] == 'dice':
+		loss_fn = SegLoss(include_background=False)
+	elif args_dict['loss'] == 'logDice':
+		loss_fn = SegLoss(include_background=False, log_dice=True)
+	elif args_dict['loss'] == 'dice_bg':
+		loss_fn = SegLoss(include_background=True)
+	elif args_dict['loss'] == 'dice_ce':
+		loss_fn = CESegLoss(include_background=False, log_dice=False)
+	elif args_dict['loss'] == 'logDice_ce':
+		loss_fn = CESegLoss(include_background=False, log_dice=True)
+	# elif args_dict['loss'] == 'dice_wce':
+	# 	loss_fn = WCESoftDiceLoss(np.array([1.22623767, 7.16236265, 89.2576995, 29.69548242]), do_bg=False)
+	elif args_dict['loss'] == 'wce':
+		loss_fn = WCELoss(
+			tf.convert_to_tensor([1.22623767, 7.16236265, 89.2576995, 29.69548242], dtype=tf.float32))
+		# [ 1.22623767  7.16236265 89.2576995  29.69548242]
+		pass
+	# elif args_dict['loss'] == 'cfocal':
+	# 	loss_fn = categorical_focal_loss(alpha=[[.25, .25, .25, .25]], gamma=2)
+	# 	# [ 1.22623767  7.16236265 89.2576995  29.69548242]
+	# 	pass
+	metric_fns = [seg_metric(include_background=False),
+				  seg_metric(include_background=False, flag_soft=False, num_classes=args_dict['n_classes']),
+				  seg_metric(class_idx=2, name="cScrew", flag_soft=False, num_classes=args_dict['n_classes']),
+				  seg_metric(include_background=False, jaccard=True, flag_soft=False,
+							 num_classes=args_dict['n_classes']),
+				  bacc_metric(include_background=False, num_classes=args_dict['n_classes'])]
+	#metric_fns = ["accuracy"]
 
-		model.compile(
-			optimizer=keras.optimizers.Adam(learning_rate=args_dict['learning_rate'], amsgrad=args_dict['amsgrad']),
-			loss=loss_fn,
-			metrics=metric_fns
-		)
+	model.compile(
+		#optimizer=keras.optimizers.SGD(learning_rate=args_dict['learning_rate'], amsgrad=args_dict['amsgrad']),
+		optimizer=keras.optimizers.Adam(learning_rate=args_dict['learning_rate']),
+		#optimizer=keras.optimizers.SGD(learning_rate=args_dict['learning_rate'], momentum=0.1),
+		loss=loss_fn,
+		metrics=metric_fns
+	)
 
 	return model
 
@@ -401,20 +413,20 @@ def create_callbacks(args_dict, train_batch, val_batch):
 	callbacks = []
 	# callbacks.append(keras.callbacks.ProgbarLogger(count_mode='samples'))
 
-	if args_dict['early_stopping']:
-		early_stopping = keras.callbacks.EarlyStopping(patience=50, verbose=1, monitor='val_loss', mode='min')
-		callbacks.append(early_stopping)
-
-	if args_dict['lr_scheduler_name'] == 'reduce_on_plateau':
-		reduce_lr = keras.callbacks.ReduceLROnPlateau(
-			factor=args_dict['factor'], patience=args_dict['after_iteration_epochs'],
-			min_lr=float(args_dict['min_lr']), verbose=1,
-			monitor='val_loss',
-			mode='min')
-		callbacks.append(reduce_lr)
+	# if args_dict['early_stopping']:
+	# 	early_stopping = keras.callbacks.EarlyStopping(patience=50, verbose=1, monitor='val_loss', mode='min')
+	# 	callbacks.append(early_stopping)
+	#
+	# if args_dict['lr_scheduler_name'] == 'reduce_on_plateau':
+	# 	reduce_lr = keras.callbacks.ReduceLROnPlateau(
+	# 		factor=args_dict['factor'], patience=args_dict['after_iteration_epochs'],
+	# 		min_lr=float(args_dict['min_lr']), verbose=1,
+	# 		monitor='val_loss',
+	# 		mode='min')
+	# 	callbacks.append(reduce_lr)
 
 	callbacks.append(LearningRateLogger())
-	callbacks.append(keras.callbacks.TerminateOnNaN())
+	# callbacks.append(keras.callbacks.TerminateOnNaN())
 
 	tb = keras.callbacks.TensorBoard(
 		log_dir=os.path.join(args_dict['log_path'], 'tb',
@@ -426,32 +438,32 @@ def create_callbacks(args_dict, train_batch, val_batch):
 	)
 	callbacks.append(tb)
 
-	file_writer_images = tf.summary.create_file_writer(
-		os.path.join(args_dict['log_path'], 'tb', args_dict['experiment_name']) + '/images_train')
-	img_train_callback = ImageLogger(file_writer_image=file_writer_images,
-									 epoch_freq=1,
-									 batch_data=train_batch)
-	callbacks.append(img_train_callback)
+	# file_writer_images = tf.summary.create_file_writer(
+	# 	os.path.join(args_dict['log_path'], 'tb', args_dict['experiment_name']) + '/images_train')
+	# img_train_callback = ImageLogger(file_writer_image=file_writer_images,
+	# 								 epoch_freq=1,
+	# 								 batch_data=train_batch)
+	# callbacks.append(img_train_callback)
+	#
+	# file_writer_images = tf.summary.create_file_writer(
+	# 	os.path.join(args_dict['log_path'], 'tb', args_dict['experiment_name']) + '/images_val')
+	# img_val_callback = ImageLogger(file_writer_image=file_writer_images,
+	# 							   epoch_freq=1,
+	# 							   batch_data=val_batch)
+	# callbacks.append(img_val_callback)
 
-	file_writer_images = tf.summary.create_file_writer(
-		os.path.join(args_dict['log_path'], 'tb', args_dict['experiment_name']) + '/images_val')
-	img_val_callback = ImageLogger(file_writer_image=file_writer_images,
-								   epoch_freq=1,
-								   batch_data=val_batch)
-	callbacks.append(img_val_callback)
-
-	model_filename = os.path.join(args_dict['experiment_path'], "best_model_based_on_val_loss.hdf5")
-	model_checkpoint = keras.callbacks.ModelCheckpoint(
-		model_filename,
-		verbose=1,
-		monitor='val_loss',
-		save_best_only=True,
-	)
-	callbacks.append(model_checkpoint)
+	# model_filename = os.path.join(args_dict['experiment_path'], "best_model_based_on_val_loss.hdf5")
+	# model_checkpoint = keras.callbacks.ModelCheckpoint(
+	# 	model_filename,
+	# 	verbose=1,
+	# 	monitor='loss',
+	# 	save_best_only=True,
+	# )
+	# callbacks.append(model_checkpoint)
 
 	# result file
-	csv_logger = keras.callbacks.CSVLogger(os.path.join(args_dict['experiment_path'], "metrics.csv"))
-	callbacks.append(csv_logger)
+	# csv_logger = keras.callbacks.CSVLogger(os.path.join(args_dict['experiment_path'], "metrics.csv"))
+	# callbacks.append(csv_logger)
 
 	return callbacks
 
@@ -482,6 +494,7 @@ def save_params_to_mlflow(config, args_dict):
 
 
 def main(args: list, args_dict: dict):
+
 	start_time: datetime = datetime.datetime.now()
 	unique_file_extension: str = start_time.strftime('%Y_%m%d_%H%M%S%f')
 	if args_dict['use_mixed_precision']:
@@ -529,97 +542,134 @@ def main(args: list, args_dict: dict):
 	if args_dict['config_file'] is not None:
 		config, args_dict = load_config(args_dict, args_dict['config_file'])
 
+	#
+	# Configure the IPU system
+	#
+	if args_dict['profile']:
+		os.environ["POPLAR_ENGINE_OPTIONS"] = '{"autoReport.all":"true", "autoReport.directory":"%s"}' % args.profile_dir
+		args_dict['epoch'] = 1
+	cfg = ipu.config.IPUConfig()
+	cfg.auto_select_ipus = args_dict['num_IPU']
+
+	# Enable the Pre-compile mode for IPU version 2 with remote buffers enabled.
+	#cfg.device_connection.type = ipu.utils.DeviceConnectionType.PRE_COMPILE
+	#cfg.device_connection.version = "ipu2"
+	#cfg.device_connection.enable_remote_buffers = True
+
+	cfg.configure_ipu_system()
+
+
 	# log all parameters to stdout
 	logger.info(f"Experiment name: {args_dict['experiment_name']}")
 	for key in sorted(list(args_dict.keys())):
 		logger.info(f'{key}\t{args_dict[key]}')
 
+	strategy = ipu_strategy.IPUStrategy()
+	logger.info('Number of devices: {}'.format(strategy.num_replicas_in_sync))
+
+	# extract batch * IPUs from both dataset
+	train_batch = None
+	val_batch = None
+	# for i in range(args_dict['num_IPU']):
+	# 	if train_batch == None:
+	# 		train_images, train_masks = next(iter(training_generator))
+	# 		train_batch = (train_images.numpy(), train_masks.numpy())
+	#
+	# 		val_images, val_masks = next(iter(valid_genarator))
+	# 		val_batch = (val_images.numpy(), val_masks.numpy())
+	# 	else:
+	# 		train_images, train_masks = next(iter(training_generator))
+	# 		train_batch = (np.concatenate((train_batch[0], train_images.numpy()), axis=0),
+	# 					   np.concatenate((train_batch[1], train_masks.numpy()), axis=0))
+	#
+	# 		val_images, val_masks = next(iter(valid_genarator))
+	# 		val_batch = (np.concatenate((val_batch[0], val_images.numpy()), axis=0),
+	# 					   np.concatenate((val_batch[1], val_masks.numpy()), axis=0))
 	#############################
 	# Doing data stuff
 	#############################
 	data_time = datetime.datetime.now()
 	training_generator, trainset_size, valid_genarator, valset_size = create_datagenerators(args, args_dict)
 	data_time = datetime.datetime.now() - data_time
-	# extract 1 batch from both dataset
-	train_batch = next(iter(training_generator))
-	val_batch = next(iter(valid_genarator))
+	ic(data_time)
 	logger.info(f"Using {trainset_size} training samples and {valset_size} validation samples")
+	with strategy.scope():
+		#########################
+		# Initialize model
+		#########################
+		model = create_model(args, args_dict)
 
-	#########################
-	# Initialize model
-	#########################
-	model = create_model(args, args_dict)
+		#########################
+		# Callbacks for model training
+		#########################
+		callbacks = create_callbacks(args_dict, train_batch, val_batch)
 
-	#########################
-	# Callbacks for model training
-	#########################
-	callbacks = create_callbacks(args_dict, train_batch, val_batch)
+		#########################
+		# Start training of model
+		#########################
+		training_time = datetime.datetime.now()
 
-	#########################
-	# Start training of model
-	#########################
-	training_time = datetime.datetime.now()
+		# NOTE (Ivo): I changed training behaviour for epochs
+		if args_dict['config_file']:
+			effective_batch_size = args_dict['batchsize'] * args_dict['num_IPU']
+			# iters_pro_epoch = len(training_generator)
+			# samples_pro_epoch = trainset_size
+			# norm number of samples pro effectiv epoch
+			steps_per_epoch = np.ceil(args_dict['iterations_pro_epoch'] / effective_batch_size) * effective_batch_size
 
-	# NOTE (Ivo): I changed training behaviour for epochs
-	if args_dict['config_file']:
-		effective_batch_size = args_dict['batchsize'] * args_dict['num_GPU']
-		# iters_pro_epoch = len(training_generator)
-		# samples_pro_epoch = trainset_size
-		# norm number of samples pro effectiv epoch
-		steps_per_epoch = args_dict['iterations_pro_epoch'] // (effective_batch_size)
+			total_training_samples = args_dict['epochs'] * trainset_size
+			# total_iterations = args_dict['epochs'] * iters_pro_epoch
+			# iteration_pro_epoch = (args_dict['samples_pro_epoch'] // (args_dict['batchsize'] * args_dict['num_GPU']) + 1 )
+			effective_epochs = (total_training_samples // effective_batch_size) + 1
+			validation_freq = args_dict['validation_freq']
 
-		total_training_samples = args_dict['epochs'] * trainset_size
-		# total_iterations = args_dict['epochs'] * iters_pro_epoch
-		# iteration_pro_epoch = (args_dict['samples_pro_epoch'] // (args_dict['batchsize'] * args_dict['num_GPU']) + 1 )
-		effective_epochs = (total_training_samples // effective_batch_size) + 1
-		validation_freq = args_dict['validation_freq']
+			# total_training_samples = args_dict['epochs'] * len(training_generator) * args_dict['batchsize'] * args_dict[
+			# 	'num_GPU']
+			# total_iterations = args_dict['epochs'] * len(training_generator)
+			# # iteration_pro_epoch = (args_dict['samples_pro_epoch'] // (args_dict['batchsize'] * args_dict['num_GPU']) + 1 )
+			# effective_epochs = (total_iterations // args_dict['iterations_pro_epoch']) + 1
+			# steps_per_epoch = args_dict['iterations_pro_epoch']
+			# validation_freq = args_dict['validation_freq']
 
-		# total_training_samples = args_dict['epochs'] * len(training_generator) * args_dict['batchsize'] * args_dict[
-		# 	'num_GPU']
-		# total_iterations = args_dict['epochs'] * len(training_generator)
-		# # iteration_pro_epoch = (args_dict['samples_pro_epoch'] // (args_dict['batchsize'] * args_dict['num_GPU']) + 1 )
-		# effective_epochs = (total_iterations // args_dict['iterations_pro_epoch']) + 1
-		# steps_per_epoch = args_dict['iterations_pro_epoch']
-		# validation_freq = args_dict['validation_freq']
+			# logger.info(f'total_training_samples: {total_training_samples}')
+			# logger.info(f'total_iterations: {total_iterations}')
+			logger.info(f'new effective total epochs: {effective_epochs}')
+			logger.info(f'iteration for each effective epoch: {steps_per_epoch}')
+			logger.info(f"effective batch size: {effective_batch_size}")
 
-		# logger.info(f'total_training_samples: {total_training_samples}')
-		# logger.info(f'total_iterations: {total_iterations}')
-		logger.info(f'new effective total epochs: {effective_epochs}')
-		logger.info(f'iteration for each effective epoch: {steps_per_epoch}')
-		logger.info(f"effective batch size: {effective_batch_size}")
+		if use_mlflow:
+			with mlflow.start_run(run_name=args_dict['experiment_name'], experiment_id=experiment.experiment_id):
+				save_params_to_mlflow(config, args_dict)
 
-	if use_mlflow:
-		with mlflow.start_run(run_name=args_dict['experiment_name'], experiment_id=experiment.experiment_id):
-			save_params_to_mlflow(config, args_dict)
-
-			mlflow.keras.autolog()
+				mlflow.keras.autolog()
+				history = model.fit(
+					training_generator,
+					epochs=effective_epochs,
+					steps_per_epoch=steps_per_epoch,
+					verbose=1,
+					#validation_data=valid_genarator,
+					#validation_freq=validation_freq,
+					callbacks=callbacks,
+					#workers=20,
+					#max_queue_size=args_dict['workers'] * 2,
+					#use_multiprocessing=True,
+					shuffle=False
+				)
+		else:
 			history = model.fit(
 				training_generator,
 				epochs=effective_epochs,
 				steps_per_epoch=steps_per_epoch,
 				verbose=1,
-				validation_data=valid_genarator,
-				validation_freq=validation_freq,
+				#validation_data=valid_genarator,
+				#validation_freq=validation_freq,
 				callbacks=callbacks,
-				workers=20,
-				max_queue_size=args_dict['workers'] * 2,
-				use_multiprocessing=True,
-				shuffle=False
+				#workers=20,
+				#max_queue_size=args_dict['workers'] * 2,
+				#use_multiprocessing=True,
+				shuffle=False,
+				prefetch_depth=8
 			)
-	else:
-		history = model.fit(
-			training_generator,
-			epochs=effective_epochs,
-			steps_per_epoch=steps_per_epoch,
-			verbose=1,
-			validation_data=valid_genarator,
-			validation_freq=validation_freq,
-			callbacks=callbacks,
-			workers=20,
-			max_queue_size=args_dict['workers'] * 2,
-			use_multiprocessing=True,
-			shuffle=False
-		)
 	training_time = datetime.datetime.now() - training_time
 	# save last model!
 	model.save(os.path.join(args_dict['experiment_path'], "last_model.hdf5"))

@@ -1,12 +1,12 @@
 dataset:
   # Image file path
-  img: '/beegfs/desy/user/ibaltrus/repos/hzg_u_net/dataset_2d_ClipNorm/'
+  img: '/localdata/ivob/data/dataset_2d_ClipNorm/'
   # DataSet Text File
   dataset_path: './../data/'
   # DataSet Text File for training
   dataset_train: 'Mg_data_train_cv0_rep0.txt'
   # DataSet Text File for validation
-  dataset_validate: 'Mg_data_val_cv0_rep0.txt'
+  dataset_validate: 'test_cv0_rep0.txt'
   online_aug: true
   load_into_memory: false
   use_pseudo: false
@@ -34,20 +34,20 @@ model_params:
   # custom_unet, vanilla_unet, unet_flex
   model_type: 'custom_unet'
   # Image Size (Pixel a*a, default=1000)
-  image_size: &image_res 640 # (height, width)
+  image_size: &image_res 320 # (height, width)
   shape_in: [ *image_res, *image_res, 1 ]
   image_size_val: 992 # (height, width)
   n_classes: 4
   # upsampling: 'bilinear' -> currently not supported
-  filters: 64
-  num_layers: 5
+  filters: 32
+  num_layers: 4
   # both 0.0 = no regularization
   regularization_factor_l1: -1
   regularization_factor_l2: -1
   dropout_conv: -1
   dropout: -1
   use_norm: 'BatchNorm'
-  activation: 'mish'
+  activation: 'relu'
   #-> migh to extra hayper Opt with ks=5
   kernel_size: 3
   output_activation: 'softmax'
@@ -79,7 +79,7 @@ train_params:
   iterations_pro_epoch: 10000
   validation_freq: 1
   # num_GPU depends on node and will be set before training
-  num_GPU: -1
+  num_IPU: 4
 
-  batchsize: 4
+  batchsize: 1
   early_stopping: true

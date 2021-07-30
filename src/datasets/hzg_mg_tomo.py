@@ -37,7 +37,8 @@ class HZGDataset:
 			self.args_dict['image_size_val'], self.args_dict['image_size_val'], 4)
 
 		self.load_validation = load_validation
-		self.GLOBAL_BATCH_SIZE = args_dict['batchsize'] * args_dict['num_GPU']
+		#self.GLOBAL_BATCH_SIZE = args_dict['batchsize'] * args_dict['num_IPU']
+		self.GLOBAL_BATCH_SIZE = args_dict['batchsize']
 		self.BUFFER_SIZE = 1000
 
 		# loading file path from text file

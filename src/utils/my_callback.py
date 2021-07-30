@@ -15,13 +15,13 @@ class ImageLogger(Callback):
 		super().__init__()
 		self.file_writer_image = file_writer_image
 		self.test_images, self.test_masks = batch_data
-		self.test_images = self.test_images.numpy()
-		self.test_masks = self.test_masks.numpy()
+		#self.test_images = self.test_images.numpy()
+		#self.test_masks = self.test_masks.numpy()
 
-		self.test_images_ds = tf.data.Dataset.from_tensors(self.test_images).cache()
-		options = tf.data.Options()
-		options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
-		self.test_images_ds = self.test_images_ds.with_options(options)
+		#self.test_images_ds = tf.data.Dataset.from_tensors(self.test_images).cache().batch(1, drop_remainder=True)
+		#options = tf.data.Options()
+		#options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
+		#self.test_images_ds = self.test_images_ds.with_options(options)
 
 		self.epoch_freq = epoch_freq
 		self.num_images = num_images
@@ -63,7 +63,7 @@ class ImageLogger(Callback):
 		if (epoch % self.epoch_freq) == 0:
 			# Use the model to predict the values from the validation dataset.
 			# test_pred_raw = self.model(self.test_images, training=False)
-			test_pred_raw = self.model.predict(self.test_images_ds)
+			test_pred_raw = self.model.predict(self.test_images, batch_size=1)
 			test_pred_raw = tf.nn.softmax(test_pred_raw, axis=-1)
 			if self.num_images > test_pred_raw.shape[0]:
 				self.num_images = test_pred_raw.shape[0]
