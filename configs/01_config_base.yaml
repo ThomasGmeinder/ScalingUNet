@@ -1,0 +1,85 @@
+dataset:
+  # Image file path
+  img: '/localdata/ivob/data/dataset_2d_ClipNorm/'
+  # DataSet Text File
+  dataset_path: './../data/'
+  # DataSet Text File for training
+  dataset_train: 'Mg_data_train_cv0_rep0.txt'
+  # DataSet Text File for validation
+  dataset_validate: 'test_cv0_rep0.txt'
+  online_aug: true
+  load_into_memory: false
+  use_pseudo: false
+
+data_aug:
+  clip_data: false
+  norm_data: true
+
+  RandomResizedCrop_p: -1
+  Flip_p: -1
+  Rotate_p: -1
+  ElasticTransform_p: -1
+  RandomBrightnessContrast_p: -1
+
+#To recap: here are the most common ways to prevent overfitting in neural networks:
+#
+# Get more training data.
+# Reduce the capacity of the network.
+# Add weight regularization.
+# Add dropout.
+# Two important approaches not covered in this guide are:
+#  data-augmentation
+#  batch normalization
+model_params:
+  # custom_unet, vanilla_unet, unet_flex
+  model_type: 'custom_unet'
+  # Image Size (Pixel a*a, default=1000)
+  image_size: &image_res 224 # (height, width)
+  shape_in: [ *image_res, *image_res, 1 ]
+  image_size_val: 992 # (height, width)
+  n_classes: 4
+  # upsampling: 'bilinear' -> currently not supported
+  filters: 64
+  num_layers: 4
+  # both 0.0 = no regularization
+  regularization_factor_l1: -1
+  regularization_factor_l2: -1
+  dropout_conv: -1
+  dropout: -1
+  use_norm: 'BatchNorm'
+  activation: 'relu'
+  #-> migh to extra hayper Opt with ks=5
+  kernel_size: 3
+  output_activation: 'softmax'
+  dropout_type: 'spatial'
+  layer_order: 'CNAD'
+
+optimizer_params:
+  # for hyper opt we use sgd with momentum
+  optimizer_name: 'adam'
+  learning_rate: 0.0003
+  amsgrad: 'false'
+  momentum: 0.9
+  use_mixed_precision: true
+
+loss_params:
+  # ['ce','dice', 'dice_ce', 'wce']
+  loss: 'dice_ce'
+  # weighted_loss: false -> not used jet
+
+lr_scheduler_params:
+  lr_scheduler_name: 'reduce_on_plateau'
+  factor: 0.5
+  after_iteration_epochs: 10
+  min_lr: 1e-9
+
+train_params:
+  workers: 10
+  epochs: 100
+  iterations_pro_epoch: 10000
+  validation_freq: 1
+  # num_GPU depends on node and will be set before training
+  num_IPU: 4
+
+  batchsize: 1
+  early_stopping: true

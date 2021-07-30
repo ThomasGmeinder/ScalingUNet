@@ -192,7 +192,7 @@ def parse_arguments():
 
 	parser.add_argument("--config_file",
 						help="Config file for experiment",
-						default="./../configs/config_b.yaml", type=Path)
+						default="./../configs/01_config_base.yaml", type=Path)
 	args = parser.parse_args()
 	args_dict = vars(args)
 	return args, args_dict
