@@ -3,6 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 from skimage import color
+from tensorflow.python import ipu
 
 MASK_COLORS = [
 	"red", "green", "blue",
@@ -378,3 +379,19 @@ def reconstruct_from_patches(img_arr, org_img_size, stride=None, size=None):
 		images_list.append(img_bg)
 
 	return np.stack(images_list)
+
+
+def get_pipeline_stage_options(args, nb_stages):
+    len_amp = len(args.available_memory_proportion)
+    if len_amp == 1:
+        return None
+    elif len_amp != nb_stages:
+        raise ValueError(
+            "The number of AMP values needs to be the same as the number of stages in pipeline")
+    else:
+        options = []
+        print("Creating Options for available_memory_proportion values {}".format(args.available_memory_proportion))
+        for amp in args.available_memory_proportion:
+            options.append(ipu.pipelining_ops.PipelineStageOptions({"availableMemoryProportion": str(amp)},
+                                                                   {"availableMemoryProportion": str(amp)}))
+        return options

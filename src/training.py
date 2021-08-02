@@ -26,6 +26,7 @@ from utils import logger
 from utils.losses import SegLoss, WCELoss, CESegLoss
 from utils.metrics import seg_metric, bacc_metric
 from utils.my_callback import ImageLogger, LearningRateLogger
+from utils.utils import get_pipeline_stage_options
 
 from tensorflow.keras import mixed_precision
 
@@ -72,6 +73,17 @@ def parse_arguments():
 	parser.add_argument("--profile_dir",
 						help="profile_dir", type=str,
 						default="./../logs/ipu")
+	parser.add_argument(
+		"--available-memory-proportion",
+		nargs='+',
+		type=float,
+		default=[0.2],
+		help="Set proportion of memory allocated for matrix multiplies, either 1 value for all IPUs or a list of size the same as the number of IPUs")
+	parser.add_argument(
+        "--gradient-accumulation-count",
+        type=int,
+        default=8,
+        help="The number of times each pipeline stage will be executed, must be at least 2*(number of pipeline stages)")
 
 	# dataset relevant arguments
 	parser.add_argument("--img",
@@ -347,7 +359,14 @@ def create_model(args, args_dict):
 	"""
 	#strategy = tf.distribute.MirroredStrategy()
 	# Create an execution strategy.
-	model = simple_unet.custom_unet((args_dict['image_size'], args_dict['image_size'], 1),
+	if args.num_IPU >=6:
+		model_fun = simple_unet.custom_unet_six_IPUs
+	elif args.num_IPU >=4:	
+		model_fun = simple_unet.custom_unet_four_IPUs
+	else:
+		model_fun = simple_unet.custom_unet_small
+
+	model = model_fun((args_dict['image_size'], args_dict['image_size'], 1),
 									num_classes=args_dict['n_classes'],
 									dropout=args_dict['dropout'],
 									dropout_conv=args_dict['dropout_conv'],
@@ -360,9 +379,15 @@ def create_model(args, args_dict):
 									kernel_size=(args_dict['kernel_size'], args_dict['kernel_size']),
 									output_activation=args_dict['output_activation'],
 									dropout_type=args_dict['dropout_type'],
-									layer_order=args_dict['layer_order'])
+									layer_order=args_dict['layer_order'],
+									args=args)
 
 	model.summary(print_fn=logger.info)
+
+	#options = get_pipeline_stage_options(args, 4)
+
+	#model.set_pipelining_options(forward_propagation_stages_poplar_options=options,
+    #                             backward_propagation_stages_poplar_options=options)
 
 	#########################
 	# Compile + train
@@ -550,6 +575,7 @@ def main(args: list, args_dict: dict):
 		args_dict['epoch'] = 1
 	cfg = ipu.config.IPUConfig()
 	cfg.auto_select_ipus = args_dict['num_IPU']
+	#cfg.convolutions.poplar_options = {'availableMemoryProportion' : '0.02'} # use less memory for convolutions
 
 	# Enable the Pre-compile mode for IPU version 2 with remote buffers enabled.
 	#cfg.device_connection.type = ipu.utils.DeviceConnectionType.PRE_COMPILE
@@ -668,7 +694,7 @@ def main(args: list, args_dict: dict):
 				#max_queue_size=args_dict['workers'] * 2,
 				#use_multiprocessing=True,
 				shuffle=False,
-				prefetch_depth=8
+				#prefetch_depth=8
 			)
 	training_time = datetime.datetime.now() - training_time
 	# save last model!
