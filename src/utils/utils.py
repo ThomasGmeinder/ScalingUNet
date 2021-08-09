@@ -395,3 +395,11 @@ def get_pipeline_stage_options(args, nb_stages):
             options.append(ipu.pipelining_ops.PipelineStageOptions({"availableMemoryProportion": str(amp)},
                                                                    {"availableMemoryProportion": str(amp)}))
         return options
+
+
+
+def get_pipeline_scheduler(args):
+    if args.pipeline_scheduler == "interleaved":
+        return ipu.pipelining_ops.PipelineSchedule.Interleaved
+    else:
+        return ipu.pipelining_ops.PipelineSchedule.Grouped

@@ -10,6 +10,7 @@ from tensorflow.keras.layers import (
 	LeakyReLU, ReLU, BatchNormalization)
 
 from tensorflow.python.ipu import keras as ipu_keras
+from tensorflow.python import ipu
 
 #TODO: implent sync batch norm
 #from tensorflow.keras.layers.experimental import SyncBatchNormalization
@@ -20,7 +21,7 @@ from tensorflow.keras.utils import get_custom_objects
 
 from tensorflow.python.ipu import keras as ipu_keras
 import math
-from utils.utils import get_pipeline_stage_options
+from utils.utils import get_pipeline_stage_options, get_pipeline_scheduler
 
 class Mish(Activation):
 	'''
@@ -177,6 +178,8 @@ def conv2d_block(
 	x = conv2d_act_drop_norm(x, name=f'{name}_1', **kwargs)
 	return x
 
+
+custom_unet_six_IPUs_default_gac = 16*6
 def custom_unet_six_IPUs(
 		input_shape,
 		num_classes=4,
@@ -321,17 +324,22 @@ def custom_unet_six_IPUs(
 	else:
 		gac = 16*6
 
-	options = get_pipeline_stage_options(args, 6)
 
-	model = ipu_keras.PipelineModel(inputs,
-                        	outputs,
-                            gradient_accumulation_count=gac,
-							forward_propagation_stages_poplar_options=options,
-                            backward_propagation_stages_poplar_options=options
-							)
+	ipu_model = keras.Model(inputs, outputs)
+
+	options = get_pipeline_stage_options(args, 6)
+	pipeline_scheduler = get_pipeline_scheduler(args)
+	ipu_model.set_pipelining_options(gradient_accumulation_steps_per_replica=args.gradient_accumulation_count,
+								steps_per_execution=args.gradient_accumulation_count,
+                                recomputation_mode=ipu.ops.pipelining_ops.RecomputationMode.Auto,
+                                pipeline_schedule=pipeline_scheduler,
+                                forward_propagation_stages_poplar_options=options,
+                                backward_propagation_stages_poplar_options=options)
+
+
 
 	#model = ipu_keras.Model(inputs=[inputs], outputs=[outputs])
-	return model
+	return ipu_model, gac
 
 
 def custom_unet_four_IPUs(
@@ -449,17 +457,28 @@ def custom_unet_four_IPUs(
 	else:
 		gac = 16*4
 
-	options = get_pipeline_stage_options(args, 4)
 
-	model = ipu_keras.PipelineModel(inputs,
-                        	outputs,
-							gradient_accumulation_count=gac, #Must be divisible by number of pipeline stages
-							forward_propagation_stages_poplar_options=options,
-                            backward_propagation_stages_poplar_options=options
-                            )
+	#model = ipu_keras.PipelineModel(inputs,
+    #                    	outputs,
+#							gradient_accumulation_count=gac, #Must be divisible by number of pipeline stages
+#							forward_propagation_stages_poplar_options=options,
+#                            backward_propagation_stages_poplar_options=options
+#                            )
+
+	ipu_model = keras.Model(inputs, outputs)
+
+	options = get_pipeline_stage_options(args, 4)
+	pipeline_scheduler = get_pipeline_scheduler(args)
+	ipu_model.set_pipelining_options(
+				gradient_accumulation_steps_per_replica=gac,
+                recomputation_mode=ipu.ops.pipelining_ops.RecomputationMode.Auto,
+                pipeline_schedule=pipeline_scheduler,
+                forward_propagation_stages_poplar_options=options,
+                backward_propagation_stages_poplar_options=options)
+
 
 	#model = ipu_keras.Model(inputs=[inputs], outputs=[outputs])
-	return model
+	return ipu_model, gac
 
 def custom_unet_small(
 		input_shape,
@@ -520,11 +539,12 @@ def custom_unet_small(
 	x = Conv2D(num_classes, (1, 1), name='conv_logits')(x)
 	outputs = layers.Activation('linear', dtype='float32', name='act_predictions')(x)
 
+	ipu_model = keras.Model(inputs, outputs)
+
 	if args.gradient_accumulation_count is not None:
 		gac = args.gradient_accumulation_count
 	else:
 		gac = 16
 
-	model = ipu_keras.Model(inputs=[inputs], outputs=[outputs], gradient_accumulation_count=gac)
-	return model
+	return ipu_model, gac
 	
