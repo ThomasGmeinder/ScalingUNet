@@ -85,6 +85,12 @@ def parse_arguments():
         default=8,
         help="The number of times each pipeline stage will be executed, must be at least 2*(number of pipeline stages)")
 
+	parser.add_argument(
+	    "--pipeline-scheduler",
+	    choices=["grouped", "interleaved"],
+	    default="interleaved",
+	    help="Choose the pipeline scheduler type.")
+
 	# dataset relevant arguments
 	parser.add_argument("--img",
 						help="Image file path", type=str)
@@ -366,7 +372,7 @@ def create_model(args, args_dict):
 	else:
 		model_fun = simple_unet.custom_unet_small
 
-	model = model_fun((args_dict['image_size'], args_dict['image_size'], 1),
+	model, gac = model_fun((args_dict['image_size'], args_dict['image_size'], 1),
 									num_classes=args_dict['n_classes'],
 									dropout=args_dict['dropout'],
 									dropout_conv=args_dict['dropout_conv'],
@@ -426,6 +432,7 @@ def create_model(args, args_dict):
 	model.compile(
 		#optimizer=keras.optimizers.SGD(learning_rate=args_dict['learning_rate'], amsgrad=args_dict['amsgrad']),
 		optimizer=keras.optimizers.Adam(learning_rate=args_dict['learning_rate']),
+		steps_per_execution=gac,
 		#optimizer=keras.optimizers.SGD(learning_rate=args_dict['learning_rate'], momentum=0.1),
 		loss=loss_fn,
 		metrics=metric_fns
