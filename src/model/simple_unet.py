@@ -393,15 +393,9 @@ def custom_unet_four_IPUs(
 			x = MaxPooling2D((2, 2), strides=2, name=f"down{l}_maxPooling")(x)
 			filters = filters * 2  # double the number of filters with each layer
 
-
-	first_down_layers = down_layers[:2:-1] # layer 3
-	second_down_layers = down_layers[2::-1] # layer 2,1,0
-
-	with ipu_keras.PipelineStage(2):   
-
         # Central convolution
 		# Experiement: Moving this from IPU2 to IPU1 did not reduce the memory on IPU2. But decreases the memory on IPU3 by 145 MB.
-		#              That is very strange
+		#              That is because in Tensorflow PipelineStage(2) becomes IPU3 and vice versa
 		if dropout > 0:
 			x = Dropout(dropout)(x)
 		x = conv2d_block(inputs=x, name=f"latent", use_norm=use_norm, dropout=dropout_conv, filters=filters,
@@ -411,6 +405,14 @@ def custom_unet_four_IPUs(
 						regularization_factor_l2=regularization_factor_l2,
 						dropout_type=dropout_type, layer_order=layer_order)
 
+
+	skip_connections_split_index = 1 # split connections 
+	first_down_layers = down_layers[:skip_connections_split_index:-1] # layers 3,2
+	second_down_layers = down_layers[skip_connections_split_index::-1] # layers 1,0
+
+	ndl = len(down_layers)
+
+	with ipu_keras.PipelineStage(2):
 		# first part of decoder
 		for i, conv in enumerate(first_down_layers):
 			filters //= 2  # decreasing number of filters with each layer
@@ -437,7 +439,6 @@ def custom_unet_four_IPUs(
 							regularization_factor_l1=regularization_factor_l1,
 							regularization_factor_l2=regularization_factor_l2,
 							dropout_type=dropout_type, layer_order=layer_order)
-
 
 		x = Conv2D(num_classes, (1, 1), name='conv_logits')(x)
 		outputs = layers.Activation('linear', dtype='float32', name='act_predictions')(x)
