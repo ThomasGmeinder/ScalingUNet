@@ -179,7 +179,6 @@ def conv2d_block(
 	return x
 
 
-custom_unet_six_IPUs_default_gac = 16*6
 def custom_unet_six_IPUs(
 		input_shape,
 		num_classes=4,
@@ -418,7 +417,7 @@ def custom_unet_four_IPUs(
 	first_down_layers = down_layers[:skip_connections_split_index:-1] # layers 3,2
 	second_down_layers = down_layers[skip_connections_split_index::-1] # layers 1,0
 
-	ndl = len(down_layers)
+	nfdl = len(first_down_layers)
 
 	with ipu_keras.PipelineStage(2):
 		# first part of decoder
@@ -438,10 +437,10 @@ def custom_unet_four_IPUs(
 		# second part of decoder
 		for i, conv in enumerate(second_down_layers):
 			filters //= 2  # decreasing number of filters with each layer
-			x = Conv2DTranspose(filters, (2, 2), strides=(2, 2), padding='same', name=f"up{i+math.ceil(ndl/2)}_convTranspose")(x)
+			x = Conv2DTranspose(filters, (2, 2), strides=(2, 2), padding='same', name=f"up{i+nfdl}_convTranspose")(x)
 
 			x = concatenate([x, conv])
-			x = conv2d_block(inputs=x, name=f"up{i+math.ceil(ndl/2)}", use_norm=use_norm, dropout=dropout_conv, filters=filters,
+			x = conv2d_block(inputs=x, name=f"up{i+nfdl}", use_norm=use_norm, dropout=dropout_conv, filters=filters,
 							kernel_size=kernel_size,
 							activation=activation, kernel_initializer=kernel_initializer, padding='same',
 							regularization_factor_l1=regularization_factor_l1,

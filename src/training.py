@@ -438,7 +438,7 @@ def create_model(args, args_dict):
 		metrics=metric_fns
 	)
 
-	return model
+	return model, gac
 
 
 def create_callbacks(args_dict, train_batch, val_batch):
@@ -630,7 +630,7 @@ def main(args: list, args_dict: dict):
 		#########################
 		# Initialize model
 		#########################
-		model = create_model(args, args_dict)
+		model, gac = create_model(args, args_dict)
 
 		#########################
 		# Callbacks for model training
@@ -644,7 +644,7 @@ def main(args: list, args_dict: dict):
 
 		# NOTE (Ivo): I changed training behaviour for epochs
 		if args_dict['config_file']:
-			effective_batch_size = args_dict['batchsize'] * args_dict['num_IPU']
+			effective_batch_size = args_dict['batchsize'] * args_dict['num_IPU'] * gac
 			# iters_pro_epoch = len(training_generator)
 			# samples_pro_epoch = trainset_size
 			# norm number of samples pro effectiv epoch
