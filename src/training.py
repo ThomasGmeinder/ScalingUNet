@@ -26,7 +26,6 @@ from utils import logger
 from utils.losses import SegLoss, WCELoss, CESegLoss
 from utils.metrics import seg_metric, bacc_metric
 from utils.my_callback import ImageLogger, LearningRateLogger
-from utils.utils import get_pipeline_stage_options
 
 from tensorflow.keras import mixed_precision
 
@@ -34,6 +33,7 @@ from tensorflow.python.ipu import keras as ipu_keras
 from tensorflow.python.ipu import ipu_strategy
 from tensorflow.python.ipu import utils as ipu_utils
 from tensorflow.python import ipu
+from utils.utils import get_pipeline_stage_options, get_pipeline_scheduler
 
 # tf.compat.v1.disable_eager_execution()
 _10sec = False
@@ -72,7 +72,7 @@ def parse_arguments():
 						help="profile", type=lambda x: (str(x).lower() == 'true'))
 	parser.add_argument("--profile_dir",
 						help="profile_dir", type=str,
-						default="./../logs/ipu")
+						default="./../reports")
 	parser.add_argument(
 		"--available-memory-proportion",
 		nargs='+',
@@ -211,6 +211,11 @@ def parse_arguments():
 	parser.add_argument("--config_file",
 						help="Config file for experiment",
 						default="./../configs/01_config_base.yaml", type=Path)
+
+	parser.add_argument("-lnp", '--layers_on_next_pipestage', type=int, default=[], nargs="*", 
+                    	help="List of layer indices that map on the next pipestage. pipestage is equal to index of this list")
+
+
 	args = parser.parse_args()
 	args_dict = vars(args)
 	return args, args_dict
@@ -365,14 +370,29 @@ def create_model(args, args_dict):
 	"""
 	#strategy = tf.distribute.MirroredStrategy()
 	# Create an execution strategy.
-	if args.num_IPU >=6:
-		model_fun = simple_unet.custom_unet_six_IPUs
-	elif args.num_IPU >=4:	
-		model_fun = simple_unet.custom_unet_four_IPUs
+	if args.num_IPU >1:
+		model_fun = simple_unet.custom_unet
 	else:
 		model_fun = simple_unet.custom_unet_small
 
-	model, gac = model_fun((args_dict['image_size'], args_dict['image_size'], 1),
+
+	model = model_fun((args_dict['image_size'], args_dict['image_size'], 1),
+									num_classes=args_dict['n_classes'],
+									dropout=args_dict['dropout'],
+									dropout_conv=args_dict['dropout_conv'],
+									filters=args_dict['filters'],
+									regularization_factor_l1=args_dict['regularization_factor_l1'],
+									regularization_factor_l2=args_dict['regularization_factor_l2'],
+									use_norm=args_dict['use_norm'],
+									activation=args_dict['activation'],
+									num_layers=args_dict['num_layers'],
+									kernel_size=(args_dict['kernel_size'], args_dict['kernel_size']),
+									output_activation=args_dict['output_activation'],
+									dropout_type=args_dict['dropout_type'],
+									layer_order=args_dict['layer_order'])
+	'''
+
+	model, gac = simple_unet.custom_unet_four_IPUs((args_dict['image_size'], args_dict['image_size'], 1),
 									num_classes=args_dict['n_classes'],
 									dropout=args_dict['dropout'],
 									dropout_conv=args_dict['dropout_conv'],
@@ -387,13 +407,41 @@ def create_model(args, args_dict):
 									dropout_type=args_dict['dropout_type'],
 									layer_order=args_dict['layer_order'],
 									args=args)
-
+	'''
 	model.summary(print_fn=logger.info)
 
-	#options = get_pipeline_stage_options(args, 4)
+	num_pipeline_stages = len(args.layers_on_next_pipestage)+1
 
-	#model.set_pipelining_options(forward_propagation_stages_poplar_options=options,
-    #                             backward_propagation_stages_poplar_options=options)
+	if args.gradient_accumulation_count is not None:
+		gac = args.gradient_accumulation_count
+	else:
+		gac = num_pipeline_stages*6
+
+	if num_pipeline_stages>1:
+		# Pipeline model 
+		assert(args.num_IPU % (num_pipeline_stages) == 0) # make sure num_IPU is a multiple
+		assignments = model.get_pipeline_stage_assignment()
+		stage_id=0
+		logger.info(f"Model has {len(assignments)} layers")
+
+		for idx, assignment in enumerate(assignments):
+			if idx in args.layers_on_next_pipestage:
+				stage_id += 1
+			assignment.pipeline_stage = stage_id
+		
+		model.set_pipeline_stage_assignment(assignments)
+		model.print_pipeline_stage_assignment_summary(print_fn=logger.info)
+
+	options = get_pipeline_stage_options(args, num_pipeline_stages)
+	pipeline_scheduler = get_pipeline_scheduler(args)
+	model.set_pipelining_options(
+			gradient_accumulation_steps_per_replica=gac,
+            recomputation_mode=ipu.ops.pipelining_ops.RecomputationMode.Auto,
+            pipeline_schedule=pipeline_scheduler,
+            forward_propagation_stages_poplar_options=options,
+            backward_propagation_stages_poplar_options=options)
+
+
 
 	#########################
 	# Compile + train
@@ -574,12 +622,19 @@ def main(args: list, args_dict: dict):
 	if args_dict['config_file'] is not None:
 		config, args_dict = load_config(args_dict, args_dict['config_file'])
 
+	logger.info(args_dict)
+
 	#
 	# Configure the IPU system
 	#
 	if args_dict['profile']:
 		os.environ["POPLAR_ENGINE_OPTIONS"] = '{"autoReport.all":"true", "autoReport.directory":"%s"}' % args.profile_dir
 		args_dict['epoch'] = 1
+
+	# always cache the exutable to save compilation time
+	os.environ["TF_POPLAR_FLAGS"] = '--executable_cache_path=./executable_cache'
+
+
 	cfg = ipu.config.IPUConfig()
 	cfg.auto_select_ipus = args_dict['num_IPU']
 	#cfg.convolutions.poplar_options = {'availableMemoryProportion' : '0.02'} # use less memory for convolutions
